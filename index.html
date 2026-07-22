@@ -108,10 +108,10 @@
     <div class="card">
       <div class="eyebrow">Unidad en ruta</div>
       <h1>Compartir mi ubicación</h1>
-      <p class="sub">Toca el botón una sola vez. Se envía directo a la base — no necesitas hacer nada más.</p>
+      <p class="sub">Toca el botón una vez para activar el envío automático — se sigue actualizando solo mientras dejes esta página abierta.</p>
 
       <input type="text" id="nombre" placeholder="Tu nombre o número de unidad">
-      <button id="btnEnviar">📍 Compartir ubicación</button>
+      <button id="btnEnviar">📍 Activar envío automático</button>
 
       <div class="estado" id="estado"></div>
       <div class="coords" id="coords"></div>
@@ -120,7 +120,8 @@
 
 <script>
   // 1) Pega aquí la URL de tu Google Apps Script una vez que la despliegues (ver README).
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzVEQ2dyUSrTWjUTqPkgZt9RnWkpTWBBfWG0edOrgDov8-xfI8e9V8kvx6GmQ27SXr1/exec";
+  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzA5b4JbwrE3SWw9mMVjXPUhRb97X5sL9FgNOd886GUeuYCjDJ5IbHCpNIpF5haS4Sh/exec";
+  const INTERVALO_MIN = 3; // cada cuántos minutos se reenvía sola
 
   const btn = document.getElementById('btnEnviar');
   const estado = document.getElementById('estado');
@@ -132,12 +133,59 @@
   const nombreUrl = params.get('nombre') || params.get('unidad');
   nombreInput.value = nombreUrl || localStorage.getItem('nombreEmpleado') || '';
 
+  let intervaloActivo = null;
+
   function setEstado(msg, tipo){
     estado.textContent = msg;
     estado.className = 'estado ' + (tipo || '');
   }
 
-  btn.addEventListener('click', () => {
+  function enviarUbicacion(nombre){
+    return new Promise((resolve) => {
+      if(!navigator.geolocation){
+        setEstado('Este teléfono no permite compartir ubicación desde el navegador.', 'error');
+        return resolve(false);
+      }
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        coordsEl.textContent = `Última ubicación: ${latitude.toFixed(5)}, ${longitude.toFixed(5)} · precisión ${Math.round(accuracy)}m · ${new Date().toLocaleTimeString('es-MX')}`;
+        try{
+          await fetch(APPS_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' }, // evita preflight en Apps Script
+            body: JSON.stringify({
+              nombre,
+              lat: latitude,
+              lng: longitude,
+              precision: Math.round(accuracy),
+              timestamp: new Date().toISOString()
+            })
+          });
+          resolve(true);
+        }catch(err){
+          resolve(false);
+        }
+      }, (err) => {
+        resolve(false);
+      }, { enableHighAccuracy: true, timeout: 15000 });
+    });
+  }
+
+  function detenerEnvioAutomatico(){
+    if(intervaloActivo) clearInterval(intervaloActivo);
+    intervaloActivo = null;
+    btn.textContent = '📍 Activar envío automático';
+    btn.dataset.activo = '0';
+    setEstado('Envío automático detenido.', '');
+  }
+
+  btn.addEventListener('click', async () => {
+    // Si ya está activo, el botón sirve para detenerlo
+    if(btn.dataset.activo === '1'){
+      detenerEnvioAutomatico();
+      return;
+    }
+
     const nombre = nombreInput.value.trim();
     if(!nombre){
       setEstado('Escribe tu nombre o número de unidad primero.', 'error');
@@ -146,45 +194,39 @@
     }
     localStorage.setItem('nombreEmpleado', nombre);
 
-    if(!navigator.geolocation){
-      setEstado('Este teléfono no permite compartir ubicación desde el navegador.', 'error');
-      return;
-    }
-
     btn.disabled = true;
     setEstado('Obteniendo tu ubicación...', 'espera');
 
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      const { latitude, longitude, accuracy } = pos.coords;
-      coordsEl.textContent = `Lat ${latitude.toFixed(5)}, Lng ${longitude.toFixed(5)} · precisión ${Math.round(accuracy)}m`;
-      setEstado('Enviando...', 'espera');
+    const ok = await enviarUbicacion(nombre);
+    btn.disabled = false;
 
-      try{
-        await fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' }, // evita preflight en Apps Script
-          body: JSON.stringify({
-            nombre,
-            lat: latitude,
-            lng: longitude,
-            precision: Math.round(accuracy),
-            timestamp: new Date().toISOString()
-          })
-        });
-        setEstado('✔ Ubicación enviada. Ya puedes cerrar esta página.', 'ok');
-      }catch(err){
-        setEstado('No se pudo enviar. Revisa tu conexión e inténtalo otra vez.', 'error');
-      }finally{
-        btn.disabled = false;
+    if(!ok){
+      setEstado('No se pudo obtener o enviar tu ubicación. Verifica el GPS y tu conexión, e inténtalo otra vez.', 'error');
+      return;
+    }
+
+    // Ya se envió la primera vez: ahora se repite sola cada INTERVALO_MIN minutos
+    btn.textContent = '⏹ Detener envío automático';
+    btn.dataset.activo = '1';
+    estado.innerHTML = `<span class="pulso"></span> Enviando automáticamente cada ${INTERVALO_MIN} min. No cierres esta página.`;
+    estado.className = 'estado ok';
+
+    intervaloActivo = setInterval(async () => {
+      const ok2 = await enviarUbicacion(nombre);
+      if(ok2){
+        estado.innerHTML = `<span class="pulso"></span> Enviando automáticamente cada ${INTERVALO_MIN} min. No cierres esta página.`;
+        estado.className = 'estado ok';
       }
-    }, (err) => {
-      btn.disabled = false;
-      if(err.code === 1){
-        setEstado('Debes dar permiso de ubicación para poder enviarla.', 'error');
-      } else {
-        setEstado('No se pudo obtener tu ubicación. Verifica que el GPS esté activado.', 'error');
-      }
-    }, { enableHighAccuracy: true, timeout: 15000 });
+    }, INTERVALO_MIN * 60 * 1000);
+  });
+
+  // Si el empleado cierra o cambia de pestaña, el navegador puede pausar el temporizador;
+  // al volver a esta pestaña, se manda una ubicación fresca de inmediato.
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible' && btn.dataset.activo === '1'){
+      const nombre = nombreInput.value.trim();
+      if(nombre) enviarUbicacion(nombre);
+    }
   });
 </script>
 </body>
