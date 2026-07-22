@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panel de unidades</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --asfalto:#14181f; --asfalto2:#1c2230; --linea:#f5a623;
+    --texto:#eef1f6; --texto-tenue:#8b93a3; --ok:#3ecf8e; --alerta:#ef5b5b;
+    --borde:#2a3140;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--asfalto);color:var(--texto);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  .layout{display:flex; height:100dvh;}
+  aside{
+    width:300px; min-width:300px; background:var(--asfalto2);
+    border-right:1px solid var(--borde); display:flex; flex-direction:column;
+    overflow:hidden;
+  }
+  header{
+    padding:18px 18px 14px; border-bottom:1px solid var(--borde);
+  }
+  .eyebrow{font-family:"Courier New",monospace; font-size:11px; letter-spacing:.14em;
+    color:var(--linea); text-transform:uppercase; margin-bottom:4px;}
+  h1{font-size:18px; margin:0;}
+  .resumen{font-size:12px; color:var(--texto-tenue); margin-top:6px;}
+  #lista{ overflow-y:auto; flex:1; padding:8px; }
+  .unidad{
+    padding:12px 12px; margin-bottom:6px; border-radius:10px;
+    background:#0f131a; border:1px solid var(--borde); cursor:pointer;
+    transition:border-color .12s;
+  }
+  .unidad:hover{ border-color:var(--linea); }
+  .unidad .nombre{ font-weight:700; font-size:14px; }
+  .unidad .hora{ font-size:11px; color:var(--texto-tenue); font-family:"Courier New",monospace; margin-top:2px;}
+  .estado-punto{ display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; }
+  .reciente{ background:var(--ok); }
+  .viejo{ background:var(--alerta); }
+  #mapa{ flex:1; }
+  .vacio{ padding:20px; color:var(--texto-tenue); font-size:13px; text-align:center; }
+  .leaflet-popup-content{ font-family:-apple-system,sans-serif; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <header>
+      <div class="eyebrow">Flota en vivo</div>
+      <h1>Ubicación de unidades</h1>
+      <div class="resumen" id="resumen">Cargando...</div>
+    </header>
+    <div id="lista"><div class="vacio">Sin datos todavía.</div></div>
+  </aside>
+  <div id="mapa"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+  // Pega aquí la misma URL de Apps Script que usaste en index.html
+  const APPS_SCRIPT_URL = "PEGA_AQUI_TU_URL_DE_APPS_SCRIPT";
+  const REFRESCO_MS = 20000; // cada 20 segundos
+
+  const map = L.map('mapa').setView([23.6345, -102.5528], 5); // centro de México por default
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap',
+    maxZoom: 19
+  }).addTo(map);
+
+  let marcadores = {};
+
+  function minutosDesde(iso){
+    return Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  }
+
+  function iconoUnidad(reciente){
+    return L.divIcon({
+      className: '',
+      html: `<div style="width:16px;height:16px;border-radius:50%;
+        background:${reciente ? '#3ecf8e' : '#ef5b5b'};
+        border:2px solid #14181f; box-shadow:0 0 0 2px ${reciente ? '#3ecf8e55' : '#ef5b5b55'};"></div>`,
+      iconSize: [16,16], iconAnchor:[8,8]
+    });
+  }
+
+  async function actualizar(){
+    let datos;
+    try{
+      const r = await fetch(APPS_SCRIPT_URL);
+      datos = await r.json();
+    }catch(e){
+      document.getElementById('resumen').textContent = 'No se pudo conectar con la base.';
+      return;
+    }
+
+    const lista = document.getElementById('lista');
+    const resumen = document.getElementById('resumen');
+    if(!datos.length){
+      lista.innerHTML = '<div class="vacio">Sin datos todavía.</div>';
+      resumen.textContent = '0 unidades reportando';
+      return;
+    }
+
+    resumen.textContent = `${datos.length} unidad(es) reportando`;
+    lista.innerHTML = '';
+
+    const idsActuales = new Set();
+
+    datos.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    datos.forEach(u => {
+      idsActuales.add(u.nombre);
+      const mins = minutosDesde(u.timestamp);
+      const reciente = mins <= 30;
+
+      // Tarjeta lateral
+      const div = document.createElement('div');
+      div.className = 'unidad';
+      div.innerHTML = `
+        <div class="nombre"><span class="estado-punto ${reciente ? 'reciente':'viejo'}"></span>${u.nombre}</div>
+        <div class="hora">hace ${mins} min · ${new Date(u.timestamp).toLocaleTimeString('es-MX')}</div>
+      `;
+      div.onclick = () => map.setView([u.lat, u.lng], 14);
+      lista.appendChild(div);
+
+      // Marcador en mapa
+      if(marcadores[u.nombre]){
+        marcadores[u.nombre].setLatLng([u.lat, u.lng]);
+        marcadores[u.nombre].setIcon(iconoUnidad(reciente));
+      } else {
+        marcadores[u.nombre] = L.marker([u.lat, u.lng], { icon: iconoUnidad(reciente) }).addTo(map);
+      }
+      marcadores[u.nombre].bindPopup(`<b>${u.nombre}</b><br>hace ${mins} min<br>${u.lat.toFixed(5)}, ${u.lng.toFixed(5)}`);
+    });
+
+    // Quitar marcadores de unidades que ya no vienen en los datos
+    Object.keys(marcadores).forEach(nombre => {
+      if(!idsActuales.has(nombre)){
+        map.removeLayer(marcadores[nombre]);
+        delete marcadores[nombre];
+      }
+    });
+  }
+
+  actualizar();
+  setInterval(actualizar, REFRESCO_MS);
+</script>
+</body>
+</html>
