@@ -20,6 +20,14 @@
     border-right:1px solid var(--borde); display:flex; flex-direction:column;
     overflow:hidden;
   }
+  @media (max-width: 700px){
+    .layout{ flex-direction:column; height:100dvh; }
+    aside{
+      width:100%; min-width:0; max-height:38dvh;
+      border-right:none; border-bottom:1px solid var(--borde);
+    }
+    #mapa{ flex:1; min-height:0; }
+  }
   header{
     padding:18px 18px 14px; border-bottom:1px solid var(--borde);
   }
@@ -34,14 +42,28 @@
     transition:border-color .12s;
   }
   .unidad:hover{ border-color:var(--linea); }
+  .fila-unidad{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .unidad .nombre{ font-weight:700; font-size:14px; }
   .unidad .hora{ font-size:11px; color:var(--texto-tenue); font-family:"Courier New",monospace; margin-top:2px;}
+  .btn-eliminar{
+    flex-shrink:0; background:transparent; border:1px solid var(--borde);
+    color:var(--texto-tenue); border-radius:8px; padding:6px 9px;
+    cursor:pointer; font-size:14px; transition:.12s;
+  }
+  .btn-eliminar:hover{ background:var(--alerta); border-color:var(--alerta); color:#fff; }
   .estado-punto{ display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; }
   .reciente{ background:var(--ok); }
   .viejo{ background:var(--alerta); }
   #mapa{ flex:1; }
   .vacio{ padding:20px; color:var(--texto-tenue); font-size:13px; text-align:center; }
   .leaflet-popup-content{ font-family:-apple-system,sans-serif; font-size:13px; }
+
+  .leaflet-control-layers{
+    background:var(--asfalto2) !important; border:1px solid var(--borde) !important;
+    color:var(--texto) !important; border-radius:10px !important;
+  }
+  .leaflet-control-layers-toggle{ filter:invert(1); }
+  .leaflet-control-layers label{ color:var(--texto) !important; font-size:13px; }
 
   .pulso-anillo{
     position:absolute; inset:0; border-radius:50%;
@@ -74,12 +96,29 @@
   const REFRESCO_MS = 20000; // cada 20 segundos
 
   const map = L.map('mapa').setView([23.6345, -102.5528], 5); // centro de México por default
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap',
-    maxZoom: 19
-  }).addTo(map);
+
+  const capaCalles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap', maxZoom: 19
+  });
+  const capaSatelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri', maxZoom: 19
+  });
+  const capaRelieve = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenTopoMap', maxZoom: 17
+  });
+
+  capaCalles.addTo(map);
+  L.control.layers({
+    'Calles': capaCalles,
+    'Satélite': capaSatelite,
+    'Relieve': capaRelieve
+  }, {}, { position: 'topright' }).addTo(map);
 
   let marcadores = {};
+  let yaCentroMapa = false;
+
+  window.addEventListener('resize', () => map.invalidateSize());
+  setTimeout(() => map.invalidateSize(), 300);
 
   function minutosDesde(iso){
     return Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -105,6 +144,17 @@
         </div>`,
       iconSize: [34,34], iconAnchor:[17,17]
     });
+  }
+
+  async function eliminarUnidad(nombre, ev){
+    ev.stopPropagation(); // que no dispare el clic de centrar mapa
+    if(!confirm(`¿Eliminar "${nombre}" del panel?`)) return;
+    try{
+      await fetch(`${APPS_SCRIPT_URL}?accion=eliminar&nombre=${encodeURIComponent(nombre)}`);
+      actualizar();
+    }catch(e){
+      alert('No se pudo eliminar. Revisa tu conexión.');
+    }
   }
 
   const CLAVE_CACHE = 'ubicacionesFlota';
@@ -164,10 +214,16 @@
       const div = document.createElement('div');
       div.className = 'unidad';
       div.innerHTML = `
-        <div class="nombre"><span class="estado-punto ${reciente ? 'reciente':'viejo'}"></span>${u.nombre}</div>
-        <div class="hora">hace ${mins} min · ${new Date(u.timestamp).toLocaleTimeString('es-MX')}</div>
+        <div class="fila-unidad">
+          <div>
+            <div class="nombre"><span class="estado-punto ${reciente ? 'reciente':'viejo'}"></span>${u.nombre}</div>
+            <div class="hora">hace ${mins} min · ${new Date(u.timestamp).toLocaleTimeString('es-MX')}</div>
+          </div>
+          <button class="btn-eliminar" title="Eliminar unidad">🗑</button>
+        </div>
       `;
       div.onclick = () => map.setView([u.lat, u.lng], 14);
+      div.querySelector('.btn-eliminar').onclick = (ev) => eliminarUnidad(u.nombre, ev);
       lista.appendChild(div);
 
       // Marcador en mapa
@@ -187,6 +243,13 @@
         delete marcadores[nombre];
       }
     });
+
+    // La primera vez que hay datos reales, centra el mapa para que se vean todas las unidades
+    if(!yaCentroMapa && datos.length){
+      const grupo = L.featureGroup(Object.values(marcadores));
+      map.fitBounds(grupo.getBounds().pad(0.3));
+      yaCentroMapa = true;
+    }
   }
 
   // Al abrir la página, muestra de inmediato lo último guardado (sin esperar la red)
