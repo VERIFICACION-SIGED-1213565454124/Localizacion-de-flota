@@ -42,6 +42,16 @@
   #mapa{ flex:1; }
   .vacio{ padding:20px; color:var(--texto-tenue); font-size:13px; text-align:center; }
   .leaflet-popup-content{ font-family:-apple-system,sans-serif; font-size:13px; }
+
+  .pulso-anillo{
+    position:absolute; inset:0; border-radius:50%;
+    border:2px solid; opacity:.7;
+    animation:pulso 1.8s ease-out infinite;
+  }
+  @keyframes pulso{
+    0%   { transform:scale(.7); opacity:.7; }
+    100% { transform:scale(1.9); opacity:0; }
+  }
 </style>
 </head>
 <body>
@@ -75,14 +85,39 @@
     return Math.round((Date.now() - new Date(iso).getTime()) / 60000);
   }
 
+  // Cambia este emoji si prefieres otro: 🚚 (camión), 🧑 (persona), 🚛, 🚐
+  const EMOJI_UNIDAD = '🚚';
+
   function iconoUnidad(reciente){
+    const color = reciente ? '#3ecf8e' : '#ef5b5b';
     return L.divIcon({
       className: '',
-      html: `<div style="width:16px;height:16px;border-radius:50%;
-        background:${reciente ? '#3ecf8e' : '#ef5b5b'};
-        border:2px solid #14181f; box-shadow:0 0 0 2px ${reciente ? '#3ecf8e55' : '#ef5b5b55'};"></div>`,
-      iconSize: [16,16], iconAnchor:[8,8]
+      html: `
+        <div style="position:relative; width:34px; height:34px;">
+          ${reciente ? `<div class="pulso-anillo" style="border-color:${color};"></div>` : ''}
+          <div style="
+            position:relative; width:34px; height:34px; border-radius:50%;
+            background:#14181f; border:2px solid ${color};
+            display:flex; align-items:center; justify-content:center;
+            font-size:17px; box-shadow:0 2px 6px rgba(0,0,0,.4);">
+            ${EMOJI_UNIDAD}
+          </div>
+        </div>`,
+      iconSize: [34,34], iconAnchor:[17,17]
     });
+  }
+
+  const CLAVE_CACHE = 'ubicacionesFlota';
+
+  function guardarCache(datos){
+    try{ localStorage.setItem(CLAVE_CACHE, JSON.stringify(datos)); }catch(e){}
+  }
+
+  function leerCache(){
+    try{
+      const guardado = localStorage.getItem(CLAVE_CACHE);
+      return guardado ? JSON.parse(guardado) : [];
+    }catch(e){ return []; }
   }
 
   async function actualizar(){
@@ -90,11 +125,21 @@
     try{
       const r = await fetch(APPS_SCRIPT_URL);
       datos = await r.json();
+      guardarCache(datos); // guarda la última versión buena que llegó
     }catch(e){
-      document.getElementById('resumen').textContent = 'No se pudo conectar con la base.';
+      datos = leerCache(); // sin conexión: usa lo último que se guardó
+      if(!datos.length){
+        document.getElementById('resumen').textContent = 'No se pudo conectar con la base.';
+        return;
+      }
+      pintarDatos(datos);
+      document.getElementById('resumen').textContent = 'Sin conexión — mostrando últimos datos guardados';
       return;
     }
+    pintarDatos(datos);
+  }
 
+  function pintarDatos(datos){
     const lista = document.getElementById('lista');
     const resumen = document.getElementById('resumen');
     if(!datos.length){
@@ -142,6 +187,13 @@
         delete marcadores[nombre];
       }
     });
+  }
+
+  // Al abrir la página, muestra de inmediato lo último guardado (sin esperar la red)
+  const cacheInicial = leerCache();
+  if(cacheInicial.length){
+    pintarDatos(cacheInicial);
+    document.getElementById('resumen').textContent = 'Cargando datos actualizados...';
   }
 
   actualizar();
